@@ -1,80 +1,129 @@
-% Input data
+% Problem formulation
+global a;
+global f;
+global g;
 
-ns = [
-    2;
-    5;
-    10;
-    15;
-    20;
-];
 
-% these values can be found using code below.
-found_dts = [
-    0.055842;
-    0.004404;
-    0.001182;
-    0.000498;
-    0.000305;
-]
+a = @(u, du, v, dv) dot(du, dv);
+f = @(x) 64/9 * x(1) * x(2) * norm(x)^(-10/3);
+g = @(x) 2 * norm(x)^(-4/3) * x(1) * x(2) * ((abs(x(1)) == 1) * (1 - 4/3 * (x(1)/norm(x))^2) + ...
+                                             (abs(x(2)) == 1) * (1 - 4/3 * (x(2)/norm(x))^2));
 
-% found_dts = [
-%     binary_search(2, 10);
-%     binary_search(5, 10);
-%     binary_search(10, 10);
-%     binary_search(15, 10);
-%     binary_search(20, 20);
-% ]
+p = 1;
 
-dts_log = log(found_dts);
+err_l2_even = [];
+err_h1_even = [];
 
-% dt = alpha * n^(beta) =>
-% log(dt) = beta * log(n) + log(alpha)
-tbl = table(log(ns), log(found_dts))
+err_l2_uneven = [];
+err_h1_uneven = [];
+xs = [];
 
-lm = fitlm(tbl,'linear')
-plot(lm)
+ns = 1:10;
+tiledlayout(2,1);
 
-2^()
-
-%at this point we should do a linear regression.
-
-function min_dt = binary_search(n, max_iter)
-    l = 0.00001;
-    r = .1;
-
-    i = 0;
-    while i < max_iter
-        dt = (l + r) / 2;        
-        is_bad = simulate(n, dt);
-        fprintf('Checking dt = %d, is_bad = %d\n', dt, is_bad);
-        if (is_bad)
-            r = dt;
-        else
-            l = dt;
-        end
-
-        i = i + 1;
-    end
-
-    min_dt = l;
+for n = ns
+    knot = prepare_knot(n, p);
+    knot = repeat_knot(knot, p);
+  
+    no_points = max(knot) + 1
+    xs = [xs; no_points];
     
-    is_bad = simulate(n, min_dt);
-    fprintf('N = %d, Found max dt = %f, is_bad = %d\n', n, min_dt, is_bad); 
+    % evenly distributed points
+    points = linspace(-1, 1, no_points);
+    [error_L2, error_h1] = measure(points, knot, p)
+    err_l2_even = [err_l2_even; error_L2];
+    err_h1_even = [err_h1_even, error_h1];
+
+    % unevenly distributed points
+    points = gen_points(no_points);
+    [error_L2, error_h1] = measure(points, knot, p)
+    err_l2_uneven = [err_l2_uneven; error_L2];
+    err_h1_uneven = [err_h1_uneven, error_h1];
 end
 
-function is_bad = simulate(n, dt)
-    knot = simple_knot(n, 2);     % knot vector
-    K = 30;                       % number of time steps
-    
-    % Problem formulation
-    f = @(t, x) 1;
-    init_state = @(x) 0;
-    
-    % Setup
-    p = degree_from_knot(knot);
+
+nexttile
+loglog(xs, err_l2_even, xs, err_l2_uneven);
+title("L2 Error");
+xlabel('Number of points');
+legend('Evenly distributed points', 'Unevenly distributed points');
+
+nexttile
+loglog(xs, err_h1_even, xs, err_h1_uneven);
+title("H1 error");
+xlabel('Number of points');
+legend('Evenly distributed points', 'Unevenly distributed points');
+
+function points = gen_points(no_points)
+    points = [];
+
+    ps = (no_points - 3) / 2;
+    point = -1.;
+    right = 0.0;
+    for i = 1:ps
+        point = (point + right) / 2;
+        points = [points; point];
+    end
+
+    points = [points; 0.0];
+
+    point = 1.;
+    left = 0.0;
+
+    right_points = [];
+    for i = 1:ps
+        point = (point + left) / 2;
+        right_points = [right_points; point];
+    end
+
+    points = cat(1, points, flip(right_points));
+    points = [-1.; points; 1.];
+end
+
+% exact u.
+function [u, du] = u_exact(args)
+  x = args(1);
+  y = args(2);
+
+  if x < 0 && y < 0
+    u = 0;
+    du = [0, 0];
+  else
+    u = (2 * x * y) / (x^2 + y^2)^(2/3);
+    du = [
+        (-2 * y * (x^2 - 3 * y^2)) / (3 * (x^2 + y^2)^(5/3));
+        (2 * x * (3 * x^2 - y^2)) / (3 * (x^2 + y^2)^(5/3));
+    ];
+  end
+end
+
+function [error_l2, error_h1] = measure(points, knot, p)
+    [u, bx, by] = solve(points, knot, p);
+
+%     B_knot = prepare_knot(10, p);
+%     B_knot = repeat_knot(B_knot, p);
+%     B_points_no = max(B_knot) + 1;
+%     B_points = linspace(-1.0, 1.0, B_points_no);
+%     Bx = basis1d(p, B_points, B_knot);
+%     By = basis1d(p, B_points, B_knot);
+
+    Bx = bx;
+    By = by;
+
+    U = @u_exact;
+    u_h = make_it_function(u, bx, by);
+    error_l2 = normfn_diff(u_h, U, @normL2, Bx, By);
+    error_h1 = normfn_diff(u_h, U, @normH1, Bx, By);
+    error_h1 = error_h1(1);
+end
+
+
+function [u, bx, by] = solve(points, knot, p)
+    global a;
+    global f;
+    global g;
+
     k = p + 1;
-    
-    points = linspace(0, 1, max(knot) + 1);
     
     bx = basis1d(p, points, knot);
     by = basis1d(p, points, knot);
@@ -88,7 +137,7 @@ function is_bad = simulate(n, dt)
     
     idx = @(dof) linear_index(dof, bx, by);
     
-    % Assemble the matrix
+    % Assemble the system - matrix and the right-hand side
     for e = elements(bx, by)
       J = jacobian2d(e, bx, by);
       for q = quad_data2d(e, k, bx, by)
@@ -98,85 +147,87 @@ function is_bad = simulate(n, dt)
           [v, dv] = basis(i);
           for j = dofs_on_element2d(e, bx, by)
             [u, du] = basis(j);
-            val = u * v;
-            M(idx(i), idx(j)) = M(idx(i), idx(j)) + val * q.w * J;
+            M(idx(i), idx(j)) = M(idx(i), idx(j)) + a(u, du, v, dv) * q.w * J;
+          end
+    
+          F(idx(i)) = F(idx(i)) + f(q.x) * v * q.w * J;
+        end
+      end
+    
+      % Boundary integrals
+      sides = boundary_edges(e, bx, by);
+      for edge = edge_data(e, sides, k, bx, by)
+        J = edge.jacobian;
+        for q = edge.quad_data
+          basis = basis_evaluator2d(q.x, bx, by);
+          for i = dofs_on_element2d(e, bx, by)
+            v = basis(i);
+            F(idx(i)) = F(idx(i)) + g(q.x) * v * q.w * J;
           end
         end
       end
+    
     end
     
-    % Modify the matrix to account for uniform Dirichlet boundary conditions
-    fixed_dofs = boundary_dofs2d(bx, by);
+    % Throw away the unnecessary DoFs - lower left quadrant
+    cx = floor(nx / 2);
+    cy = floor(ny / 2);
+    fixed_dofs = cartesian(0:cx, 0:cy);
+    
     [M, F] = dirichlet_bc_uniform(M, F, fixed_dofs, bx, by);
     
-    % Put the initial state into u
-    u = project2d(init_state, bx, by);
+    % Solve
+    u = reshape(M \ F, nx, ny);
     
-    % Plot the initial state
-    save_plot(u, 0, bx, by);
-    
-    % Time stepping loop
-    is_bad = false;
-    for m = 1:K
-      t = m * dt;
-      % fprintf('Iter %d, t = %f\n', m, t);
-    
-      % Assemble the right-hand side
-      F(:) = 0;
-      for e = elements(bx, by)
-        J = jacobian2d(e, bx, by);
-        for q = quad_data2d(e, k, bx, by)
-          basis = basis_evaluator2d(q.x, bx, by);
-    
-          % u - solution from the previous time step
-          [U, dU] = evaluate_with_grad2d(u, q.x, bx, by);
-          fval = f(t - dt, q.x);
-    
-          for i = dofs_on_element2d(e, bx, by)
-            [v, dv] = basis(i);
-    
-            rhs = U * v - dt * dot(dU, dv) + dt * fval;
-            F(idx(i)) = F(idx(i)) + rhs * q.w * J;
-          end
-        end
-      end
-    
-      % Impose boundary conditions
-      for d = fixed_dofs
-        F(idx(d)) = 0;
-      end
-    
-      % Solve
-      u = reshape(M \ F, nx, ny);
-      if(any(u<-1.0, 'all') )
-        is_bad=true;
-        break;
-      end
-      % Plot the solution
-      %save_plot(u, m, bx, by);
-    end
+    % Plot the solution
+    % N = 50;
+    % figure('name', 'Solution', 'Position', [0 0 500 400]);
+    % surface_plot_spline(u, [-1 1], [-1 1], N, bx, by);
 end
-    % Build cartesian product of specified vectors.
-    % Vector orientation is arbitrary.
-    %
-    % Order: first component changes fastest
-    %
-    % a1, a2, ... - sequence of n vectors
-    %
-    % returns - array of n-columns containing all the combinations of values in aj
-    function c = cartesian(varargin)
-      n = nargin;
-    
-      [F{1:n}] = ndgrid(varargin{:});
-      for i = n:-1:1
-        c(i,:) = F{i}(:);
-      end
+
+
+function knots = prepare_knot(n, p)
+    knots = zeros(1, n+p+3);
+    value = 0;
+    for i = 1:p+1
+        knots(i) = 0;
     end
     
-    % Create a row vector of size n filled with val
-    function r = row_of(val, n)
-      r = val * ones(1, n);
+    for i = p+2:n+2
+        value = value+1;
+        knots(i) = value;
     end
+
+    value = value+1;
+    for i = n+3:n+p+3
+       knots(i) = value;
+    end
+
+end
+
+
+% Build cartesian product of specified vectors.
+% Vector orientation is arbitrary.
+%
+% Order: first component changes fastest
+%
+% a1, a2, ... - sequence of n vectors
+%
+% returns - array of n-columns containing all the combinations of values in aj
+function c = cartesian(varargin)
+  n = nargin;
+
+  [F{1:n}] = ndgrid(varargin{:});
+  for i = n:-1:1
+    c(i,:) = F{i}(:);
+  end
+end
+
+% Create a row vector of size n filled with val
+function r = row_of(val, n)
+  r = val * ones(1, n);
+end
+
 
 % Index conventions
 %------------------
@@ -287,6 +338,27 @@ function idx = dofs_on_element2d(e, bx, by)
   idx = cartesian(rx, ry);
 end
 
+% Determine which edges of the element lie on the domain boundary
+%
+% e      - element index (pair)
+% bx, by - 1D bases
+%
+% returns - array of 4 boolean values (0 or 1), 1 meaning the edge is part of domain boundary
+%           Order of the edges:
+%             1 - left
+%             2 - right
+%             3 - top
+%             4 - bottom
+function s = boundary_edges(e, bx, by)
+  nx = number_of_elements(bx);
+  ny = number_of_elements(by);
+
+  s = [e(1) == 0,       ...   % left
+       e(1) == nx - 1,  ...   % right
+       e(2) == ny - 1,  ...   % top
+       e(2) == 0];            % bottom
+end
+
 % Compute 1-based, linear index of tensor product DoF.
 % Column-major order - first index component changes fastest.
 %
@@ -309,15 +381,6 @@ end
 % Assuming clamped B-spline basis, compute the polynomial order based on the knot
 function p = degree_from_knot(knot)
   p = find(knot > 0, 1) - 2;
-end
-
-% Create a knot without interior repeated nodes
-%
-% elems - number of elements to subdivide domain into
-% p     - polynomial degree
-function knot = simple_knot(elems, p)
-  pad = ones(1, p);
-  knot = [0 * pad, 0:elems, elems * pad];
 end
 
 
@@ -473,6 +536,7 @@ function val = evaluate2d(u, x, bx, by)
   end
 end
 
+
 % Compute value and gradient of combination of 1D B-splines at point x
 function [val, grad] = evaluate_with_grad2d(u, x, bx, by)
   sx = find_span(x(1), bx);
@@ -592,10 +656,31 @@ function ws = quad_weights(k)
             0.47862867049936646804, ...
             0.56888888888888888889, ...
             0.47862867049936646804, ...
-            0.23692688505618908751]
+            0.23692688505618908751];
   end
   % Gaussian quadrature is defined on [-1, 1], we use [0, 1]
   ws = ws / 2;
+end
+
+
+% Create array of structures containing quadrature data for integrating over 1D element
+%
+% e - element index
+% k - quadrature order
+% b - 1D basis
+%
+% returns - array of k structures with fields
+%              x - point
+%              w - weight
+function qs = quad_data1d(e, k, b)
+  xs = quad_points(b.points(e(1) + 1), b.points(e(1) + 2), k);
+  ws = quad_weights(k);
+
+  for i = 1:k
+      qs(i).x = xs(i);
+      qs(i).w = ws(i);
+  end
+
 end
 
 % Create array of structures containing quadrature data for integrating over 2D element
@@ -622,44 +707,85 @@ function qs = quad_data2d(e, k, bx, by)
 
 end
 
-% Row vector containing indices (columns) of DoFs non-zero on the left edge
-function ds = boundary_dofs_left(bx, by)
-  ny = number_of_dofs(by);
+% Compute quarature data for integrating on selected edges of the 2D element
+%
+% e      - index of the element
+% sides  - array of 4 boolean values, used to determine which edges to prepare data for.
+%          Order of the edges:
+%            1 - left
+%            2 - right
+%            3 - top
+%            4 - bottom
+% k      - order of the quadrature
+% bx, by - 1D bases
+%
+% returns - array of structures containing fields:
+%             jacobian  - jacobian of the edge parameterization
+%             normal    - unit vector perpendicular to the edge
+%             quad_data - points and weights of 1D quadrature on the edge
+function es = edge_data(e, sides, k, bx, by)
+  % Empty structure array
+  es = struct('jacobian', [], 'normal', [], 'quad_data', []);
 
-  ds = [row_of(0, ny); dofs(by)];
+  if (sides(1))
+    es(end+1) = edge_data_left(e, k, bx, by);
+  end
+  if (sides(2))
+    es(end+1) = edge_data_right(e, k, bx, by);
+  end
+  if (sides(3))
+    es(end+1) = edge_data_top(e, k, bx, by);
+  end
+  if (sides(4))
+    es(end+1) = edge_data_bottom(e, k, bx, by);
+  end
 end
 
-% Row vector containing indices (columns) of DoFs non-zero on the right edge
-function ds = boundary_dofs_right(bx, by)
-  nx = number_of_dofs(bx);
-  ny = number_of_dofs(by);
 
-  ds = [row_of(nx - 1, ny); dofs(by)];
+% Auxiliary functions - computing quadrature data for each single edge
+
+function edge = edge_data_left(e, k, bx, by)
+  x1 = bx.points(e(1) + 1);
+
+  edge.jacobian = jacobian1d(e(2), by);
+  edge.normal = [-1 0];
+  edge.quad_data = quad_data1d(e(2), k, by);
+  for i = 1:k
+    edge.quad_data(i).x = [x1, edge.quad_data(i).x];
+  end
 end
 
-% Row vector containing indices (columns) of DoFs non-zero on the bottom edge
-function ds = boundary_dofs_bottom(bx, by)
-  nx = number_of_dofs(bx);
+function edge = edge_data_right(e, k, bx, by)
+  x2 = bx.points(e(1) + 2);
 
-  ds = [dofs(bx); row_of(0, nx)];
+  edge.jacobian = jacobian1d(e(2), by);
+  edge.normal = [1 0];
+  edge.quad_data = quad_data1d(e(2), k, by);
+  for i = 1:k
+    edge.quad_data(i).x = [x2, edge.quad_data(i).x];
+  end
 end
 
-% Row vector containing indices (columns) of DoFs non-zero on the top edge
-function ds = boundary_dofs_top(bx, by)
-  nx = number_of_dofs(bx);
-  ny = number_of_dofs(by);
+function edge = edge_data_bottom(e, k, bx, by)
+  y1 = by.points(e(2) + 1);
 
-  ds = [dofs(bx); row_of(ny - 1, nx)];
+  edge.jacobian = jacobian1d(e(1), bx);
+  edge.normal = [0 -1];
+  edge.quad_data = quad_data1d(e(1), k, bx);
+  for i = 1:k
+    edge.quad_data(i).x = [edge.quad_data(i).x, y1];
+  end
 end
 
-% Row vector containing indices (columns) of DoFs non-zero on some part of the boundary
-function ds = boundary_dofs2d(bx, by)
-  left   = boundary_dofs_left(bx, by);
-  right  = boundary_dofs_right(bx, by);
-  bottom = boundary_dofs_bottom(bx, by);
-  top    = boundary_dofs_top(bx, by);
+function edge = edge_data_top(e, k, bx, by)
+  y2 = by.points(e(2) + 2);
 
-  ds = [left, right, top(:,2:end-1), bottom(:,2:end-1)];
+  edge.jacobian = jacobian1d(e(1), bx);
+  edge.normal = [0 1];
+  edge.quad_data = quad_data1d(e(1), k, bx);
+  for i = 1:k
+    edge.quad_data(i).x = [edge.quad_data(i).x, y2];
+  end
 end
 
 % Modify matrix and right-hand side to enforce uniform (zero) Dirichlet boundary conditions
@@ -712,6 +838,17 @@ function surface_plot_spline(u, xr, yr, N, bx, by)
   surface_plot_values(vals, xs, ys);
 end
 
+% Plot arbitrary function on a square given as product of xr and yr
+%
+% f      - function accepting 2D point as a two-element vector
+% xr, yr - intervals specifying the domain, given as two-element vectors
+% N      - number of plot 'pixels' in each direction
+function surface_plot_fun(f, xr, yr, N)
+  [xs, ys] = make_grid(xr, yr, N);
+  vals = evaluate_on_grid(f, xs, ys);
+  surface_plot_values(vals, xs, ys);
+end
+
 % Plot array of values
 %
 % vals   - 2D array of size [length(ys), length(xs)]
@@ -722,54 +859,108 @@ function surface_plot_values(vals, xs, ys)
   ylabel('y');
 end
 
+% Function pasting two copies of the knot vector together
+function k = repeat_knot(knot, p)
+  m = max(knot);
+  k = [knot(1:end-1), knot(p+2:end) + m];
+end
 
-% Compute L2-projection of f onto 2D B-spline space spanned by the tensor product
-% of bases bx and by
+
+% Integrate function over the domain of specified B-spline basis
+% Order quadratures is determined by orders of B-splines (p + 1).
+% Quadrature points are generated using the mesh defined by the basis.
 %
-% f      - real-valued function taking two-element vector argument
-% bx, by - 1D basis
+% f      - function accepting point as two-element vector
+% bx, by - 1D bases
 %
-% returns - matrix of coefficients
-function u = project2d(f, bx, by)
-  nx = number_of_dofs(bx);
-  ny = number_of_dofs(by);
-  n = nx * ny;
-  k = max([bx.p, by.p]) + 1;
-  idx = @(dof) linear_index(dof, bx, by);
+% returns - integral of f over product of domains of bx and by
+function value = integrate2d(f, bx, by)
+  k = max([bx.p by.p]) + 1;
 
-  M = sparse(n, n);
-  F = zeros(n, 1);
-
+  value = 0;
   for e = elements(bx, by)
     J = jacobian2d(e, bx, by);
     for q = quad_data2d(e, k, bx, by)
-      basis = basis_evaluator2d(q.x, bx, by);
-
-      for i = dofs_on_element2d(e, bx, by)
-        v = basis(i);
-        for j = dofs_on_element2d(e, bx, by)
-          u = basis(j);
-          M(idx(i), idx(j)) = M(idx(i), idx(j)) + u * v * q.w * J;
-        end
-
-        F(idx(i)) = F(idx(i)) + f(q.x) * v * q.w * J;
-      end
+      value = value + f(q.x) * q.w * J;
     end
   end
+end
 
-  u = reshape(M \ F, nx, ny);
+% Compute Sobolev-type norm of function on 2D domain
+%
+% f         - function accepting point as two-element vector
+% norm_type - function representing the norm
+% bx, by    - 1D bases
+%
+% Function f must return one or two output values:
+%   - value
+%   - gradient [optional]
+% Gradient is necessary for computing higher-order norms (e.g. H1)
+%
+% norm_type should accept function and a point, and commpute a quantity that upon being
+% integrated over the whole domain yields a square of the desired norm.
+function val = normfn(f, norm_type, bx, by)
+  f = make_it_function(f, bx, by);
+  val = integrate2d(@(x) norm_type(f, x), bx, by);
+  val = sqrt(val);
+end
+
+% Compute difference in Sobolev-type norm of two functions on 2D domain
+% Avoids issues with subtracting functions returning gradient as the second output value
+%
+% f, g      - function accepting point as two-element vector
+% norm_type - function representing the norm
+% bx, by    - 1D bases
+%
+% See also: normfn
+function val = normfn_diff(f, g, norm_type, bx, by)
+  f = make_it_function(f, bx, by);
+  g = make_it_function(g, bx, by);
+
+  diff = @(x) minus_funs(f, g, x);
+  val = normfn(diff, norm_type, bx, by);
 end
 
 
-
-
-% Auxiliary function saving plot to a file with name including iteration number
-function save_plot(u, iter, bx, by)
-  N = 50;
-  h = figure('visible', 'off');
-  surface_plot_spline(u, [0 1], [0 1], N, bx, by);
-  zlim([0 0.8]);
-  saveas(h, sprintf('bad_out_%d.png', iter));
+% Integrand of L2 norm of f at point x
+function val = normL2(f, x)
+  v = f(x);
+  val = v^2;
 end
 
+% Integrand of H1 norm of f at point x
+function val = normH1(f, x)
+  [v, dv] = f(x);
+  val = v^2 + dot(dv, dv);
+end
+
+
+% Auxiliary functions
+
+% f - either function handle or 2D array of coefficients of tensor product B-spline basis
+%
+% Allows using the same code for both regular functions and B-splines in the norm functions.
+function f = make_it_function(f, bx, by)
+  if (~isa(f, 'function_handle'))
+    f = @(x) evaluate_with_grad2d(f, x, bx, by);
+  end
+end
+
+% Evaluate f and g at x, and compute the difference between all their output values
+% requested by the caller. Boilerplate to facilitate working with regular scalar functions
+% and those that also return the gradient.
+function varargout = minus_funs(f, g, x)
+  n = nargout;
+
+  fv = cell(1, n);
+  [fv{:}] = f(x);
+
+  gv = cell(1, n);
+  [gv{:}] = g(x);
+
+  varargout = cell(1, n);
+  for i = 1:n
+    varargout{i} = fv{i} - gv{i};
+  end
+end
 
